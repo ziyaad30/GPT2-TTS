@@ -185,15 +185,15 @@ def train(cfg_path='configs/tts_config.json'):
             optimizer.step()
             lr = scheduler.get_last_lr()[0]
 
-            if step % 5 == 0:
+            if step % 50 == 0:
                 print(f'[Epoch: {epoch}, '
                       f'Iteration: {idx + 1}/{len(dataloader)} - '
                       f'{100. * (idx + 1) / len(dataloader):.2f}%]')
 
-            print(f"Step: {step}, Total loss: {loss :.5f}, "
-                  f"Diffusion loss: {diffusion_loss.item() :.5f}, "
-                  f"Text loss: {loss_text.item() * 0.01 :.5f}, "
-                  f"Mel loss: {loss_mel.item() * 1.0 :.5f}, Grad norm: {grad_norm :.5f}, Lr: {lr}")
+                print(f"Step: {step}, Total loss: {loss :.5f}, "
+                      f"Diffusion loss: {diffusion_loss.item() :.5f}, "
+                      f"Text loss: {loss_text.item() * 0.01 :.5f}, "
+                      f"Mel loss: {loss_mel.item() * 1.0 :.5f}, Grad norm: {grad_norm :.5f}, Lr: {lr}")
 
             if step % save_freq == 0:
                 print("Saving...")
