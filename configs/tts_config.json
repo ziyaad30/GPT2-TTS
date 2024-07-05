@@ -6,8 +6,8 @@
     "mel_bin": 100
   },
   "gpt_train": {
-    "train_file": "./tort_dataset/train.txt",
-    "valid_file": "./tort_dataset/valid.txt",
+    "train_file": "./LJSPEECH/train.txt",
+    "valid_file": "./LJSPEECH/valid.txt",
     "logs_dir": "logs/gpt",
     "train_epochs": 50,
     "val_freq": 100,
@@ -25,7 +25,7 @@
     "pin_memory": false
   },
   "vae_train": {
-    "train_file": "./tort_dataset/train2.txt",
+    "train_file": "./LJSPEECH/train.txt",
     "logs_dir": "logs/dvae",
     "pad_to_samples": 200,
     "sample_rate": 24000,
