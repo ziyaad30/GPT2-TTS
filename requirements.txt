@@ -1,0 +1,8 @@
+transformers==4.28.1 
+einops==0.7.0 
+k_diffusion 
+unidecode 
+inflect==7.0.0 
+encodec==0.1.1 
+vocos==0.1.0
+gdown
