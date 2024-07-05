@@ -172,7 +172,7 @@ def train(cfg_path='configs/tts_config.json'):
             optimizer.step()
             lr = scheduler.get_last_lr()[0]
 
-            if step % 50 == 0:
+            if step % 10 == 0:
                 print(f'[Epoch: {epoch}, '
                       f'Iteration: {idx + 1}/{len(dataloader)} - '
                       f'{100. * (idx + 1) / len(dataloader):.2f}%]')
