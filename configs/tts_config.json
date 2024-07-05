@@ -1,0 +1,50 @@
+{
+  "gpt": {
+    "layers": 15,
+    "heads": 16,
+    "model_dim": 1024,
+    "mel_bin": 100
+  },
+  "gpt_train": {
+    "train_file": "./tort_dataset/train.txt",
+    "valid_file": "./tort_dataset/valid.txt",
+    "logs_dir": "logs/gpt",
+    "train_epochs": 50,
+    "val_freq": 100,
+    "save_freq": 50,
+    "keep_ckpts": 2,
+    "lr": 5e-5,
+    "text_weight": 0.01,
+    "mel_weight": 1.0
+  },
+  "gpt_dataloader": {
+    "batch_size" : 2,
+    "shuffle": true,
+    "num_workers": 0,
+    "drop_last": false,
+    "pin_memory": false
+  },
+  "vae_train": {
+    "train_file": "./tort_dataset/train2.txt",
+    "logs_dir": "logs/dvae",
+    "pad_to_samples": 200,
+    "sample_rate": 24000,
+    "n_mels": 100,
+    "squeeze": false,
+    "train_epochs":1000,
+    "log_interval": 10,
+    "eval_interval": 100,
+    "save_freq": 500,
+    "keep_ckpts": 5,
+    "lr": 1e-4,
+    "power": 1,
+    "mel_fmax": null
+  },
+  "vae_dataloader": {
+    "batch_size" : 16,
+    "shuffle": true,
+    "num_workers" : 0,
+    "drop_last": false,
+    "pin_memory": false
+  }
+}
