@@ -18,7 +18,7 @@
     "mel_weight": 1.0
   },
   "gpt_dataloader": {
-    "batch_size" : 2,
+    "batch_size" : 8,
     "shuffle": true,
     "num_workers": 0,
     "drop_last": false,
