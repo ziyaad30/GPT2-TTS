@@ -120,20 +120,7 @@ def train(cfg_path='configs/tts_config.json'):
         print(f">> GPT weights restored from: {gpt_model_path} at step: {step}")
     except Exception as e:
         print(e)
-        try:
-            gpt_model_path = "C:\\Users\\User\\PycharmProjects\\new_tortoise\\.models\\autoregressive.pth"
-            gpt_checkpoint = torch.load(gpt_model_path, map_location="cpu")
-            if 'step' in gpt_checkpoint:
-                step = gpt_checkpoint['step'] + 1
-            if 'epoch' in gpt_checkpoint:
-                epoch = gpt_checkpoint['epoch']
-            if 'model' in gpt_checkpoint:
-                gpt_checkpoint = gpt_checkpoint['model']
-            tts.load_state_dict(gpt_checkpoint, strict=False)
-            print(f">> GPT weights restored from: {gpt_model_path} at step: {step}")
-        except Exception as e:
-            print(e)
-
+        
     writer = SummaryWriter(log_dir=os.path.join(logs_folder))
     tts.cuda()
     tts.train()
