@@ -108,7 +108,7 @@ def train(cfg_path='configs/tts_config.json'):
     train_diffusion_steps = 30
 
     try:
-        gpt_model_path = latest_checkpoint_path(f"{logs_folder}", f"TEST_[0-9]*")
+        gpt_model_path = latest_checkpoint_path(f"{logs_folder}", f"GPT_[0-9]*")
         gpt_checkpoint = torch.load(gpt_model_path, map_location="cpu")
         if 'step' in gpt_checkpoint:
             step = gpt_checkpoint['step'] + 1
@@ -202,10 +202,10 @@ def train(cfg_path='configs/tts_config.json'):
                     'epoch': epoch,
                     'model': tts.state_dict(),
                 }
-                torch.save(data, f'{logs_folder}/TEST_{step}.pth')
-                print(f'Saved GPT model to {logs_folder}/TEST_{step}.pth')
+                torch.save(data, f'{logs_folder}/GPT_{step}.pth')
+                print(f'Saved GPT model to {logs_folder}/GPT_{step}.pth')
                 keep_ckpts = cfg['gpt_train']['keep_ckpts']
-                old_ckpt = oldest_checkpoint_path(f"{logs_folder}", f"TEST_[0-9]*", preserved=keep_ckpts)
+                old_ckpt = oldest_checkpoint_path(f"{logs_folder}", f"GPT_[0-9]*", preserved=keep_ckpts)
                 if os.path.exists(old_ckpt):
                     print(f"Removed old GPT model {old_ckpt}")
                     os.remove(old_ckpt)
