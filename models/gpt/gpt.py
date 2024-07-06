@@ -1,57 +1,18 @@
 import functools
-import json
-import os
 import random
-from pathlib import Path
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.optim.adamw import AdamW
-from torch.utils.data import DataLoader
-from torch.utils.tensorboard import SummaryWriter
 from transformers import GPT2Model, GPT2Config, LogitsProcessorList
-from common.xtts_dataset import XTTSDataset
-from models.arch_util import AttentionBlock, TorchCodeMelSpectrogram
-from models.diffusion.diff_utils.diffusion import SpacedDiffusion, space_timesteps, get_named_beta_schedule
-from models.diffusion.model import TTS_diffusion, normalize_tacotron_mel, denormalize_tacotron_mel
-from models.dvae.dvae import DiscreteVAE
+
+from models.arch_util import AttentionBlock
 from models.gpt.gpt_inference_model import GPT2InferenceModel
 from models.typical_sampling import TypicalLogitsWarper
-from text.voice_tokenizer import VoiceBpeTokenizer
-from utils import latest_checkpoint_path, oldest_checkpoint_path, plot_spectrogram_to_numpy, summarize
-from vocoder2.vocos import Vocos
 
 
 def null_position_embeddings(range, dim):
     return torch.zeros((range.shape[0], range.shape[1], dim), device=range.device)
-
-
-def load_discrete_vocoder_diffuser(trained_diffusion_steps=1000, desired_diffusion_steps=50, cond_free=True,
-                                   cond_free_k=2.):
-    return SpacedDiffusion(use_timesteps=space_timesteps(trained_diffusion_steps, [desired_diffusion_steps]),
-                           model_mean_type='epsilon',
-                           model_var_type='learned_range', loss_type='mse',
-                           betas=get_named_beta_schedule('linear', trained_diffusion_steps),
-                           conditioning_free=cond_free, conditioning_free_k=cond_free_k,
-                           sampler='dpm++2m')
-
-
-def do_spectrogram_diffusion(diffusion_model, diffuser, latents, refer, temperature=1., verbose=True):
-    """
-    Uses the specified diffusion model to convert discrete codes into a spectrogram.
-    """
-    with torch.no_grad():
-        output_seq_len = latents.shape[2] * 4  # This converts from 22kHz spec codes to a 24kHz spec signal.
-        output_shape = (latents.shape[0], 100, output_seq_len)
-
-        noise = torch.randn(output_shape, device=latents.device) * temperature
-        mel = diffuser.p_sample_loop(diffusion_model, output_shape, noise=noise,
-                                     model_kwargs={
-                                         "latent": latents,
-                                         "refer": refer
-                                     },
-                                     progress=verbose)
-        return denormalize_tacotron_mel(mel)[:, :, :output_seq_len]
 
 
 class LearnedPositionEmbeddings(nn.Module):
@@ -132,15 +93,6 @@ class TTSModel(nn.Module):
                                 gradient_checkpointing=checkpointing,
                                 use_cache=not checkpointing)
         self.gpt = GPT2Model(gpt_config)
-
-        self.diffusion = TTS_diffusion(in_latent_channels=model_dim)
-
-        self.diffuser = SpacedDiffusion(
-            use_timesteps=space_timesteps(1000, [1000]),
-            model_mean_type='epsilon',
-            model_var_type='learned_range', loss_type='mse',
-            betas=get_named_beta_schedule('linear', 1000),
-            conditioning_free=False, conditioning_free_k=2.)
 
         self.mel_embedding = nn.Embedding(self.number_mel_codes, model_dim)
         self.mel_pos_embedding = LearnedPositionEmbeddings(max_mel_seq_len, model_dim)
@@ -234,6 +186,8 @@ class TTSModel(nn.Module):
 
         speech_conditioning_latent = self.get_conditioning(speech_conditioning_latent)
         conds = speech_conditioning_latent.unsqueeze(1)
+
+        # print(conds.shape, text_inputs.shape)
 
         text_inputs, text_targets = self.build_aligned_inputs_and_targets(text_inputs, self.start_text_token,
                                                                           self.stop_text_token)

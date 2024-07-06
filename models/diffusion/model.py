@@ -1,18 +1,21 @@
-import math
-import random
-from abc import abstractmethod
-
+import torch as th
+from einops import rearrange, repeat
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from einops import repeat
+from abc import abstractmethod
+from torch import autocast
+import math
+import random
 
-from models.diffusion.utils import normalization, AttentionBlock
+from models.diffusion.diffusion_utils import normalization, AttentionBlock
 from models.diffusion.vc_utils import MultiHeadAttention
 
 TACOTRON_MEL_MAX = 5.5451774444795624753378569716654
 TACOTRON_MEL_MIN = -16.118095650958319788125940182791
 
+
+# TACOTRON_MEL_MIN = -11.512925464970228420089957273422
 
 def denormalize_tacotron_mel(norm_mel):
     return norm_mel / 0.18215
@@ -185,11 +188,11 @@ def count_parameters(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
 
-class TTS_diffusion(nn.Module):
+class Diffusion_Tts(nn.Module):
     def __init__(
             self,
-            model_channels=512,
-            num_layers=6,
+            model_channels=1024,
+            num_layers=15,
             in_channels=100,
             in_latent_channels=1024,
             out_channels=200,  # mean and variance

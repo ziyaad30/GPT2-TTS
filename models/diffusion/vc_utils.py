@@ -4,7 +4,11 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from models.diffusion import commons
+
+def convert_pad_shape(pad_shape):
+    l = pad_shape[::-1]
+    pad_shape = [item for sublist in l for item in sublist]
+    return pad_shape
 
 
 class MultiHeadAttention(nn.Module):
@@ -149,7 +153,7 @@ class MultiHeadAttention(nn.Module):
         if pad_length > 0:
             padded_relative_embeddings = F.pad(
                 relative_embeddings,
-                commons.convert_pad_shape([[0, 0], [pad_length, pad_length], [0, 0]]),
+                convert_pad_shape([[0, 0], [pad_length, pad_length], [0, 0]]),
             )
         else:
             padded_relative_embeddings = relative_embeddings
@@ -165,12 +169,12 @@ class MultiHeadAttention(nn.Module):
         """
         batch, heads, length, _ = x.size()
         # Concat columns of pad to shift from relative to absolute indexing.
-        x = F.pad(x, commons.convert_pad_shape([[0, 0], [0, 0], [0, 0], [0, 1]]))
+        x = F.pad(x, convert_pad_shape([[0, 0], [0, 0], [0, 0], [0, 1]]))
 
         # Concat extra elements so to add up to shape (len+1, 2*len-1).
         x_flat = x.view([batch, heads, length * 2 * length])
         x_flat = F.pad(
-            x_flat, commons.convert_pad_shape([[0, 0], [0, 0], [0, length - 1]])
+            x_flat, convert_pad_shape([[0, 0], [0, 0], [0, length - 1]])
         )
 
         # Reshape and slice out the padded elements.
@@ -205,33 +209,3 @@ class MultiHeadAttention(nn.Module):
         r = torch.arange(length, dtype=torch.float32)
         diff = torch.unsqueeze(r, 0) - torch.unsqueeze(r, 1)
         return torch.unsqueeze(torch.unsqueeze(-torch.log1p(torch.abs(diff)), 0), 0)
-class HParams():
-  def __init__(self, **kwargs):
-    for k, v in kwargs.items():
-      if type(v) == dict:
-        v = HParams(**v)
-      self[k] = v
-
-  def keys(self):
-    return self.__dict__.keys()
-
-  def items(self):
-    return self.__dict__.items()
-
-  def values(self):
-    return self.__dict__.values()
-
-  def __len__(self):
-    return len(self.__dict__)
-
-  def __getitem__(self, key):
-    return getattr(self, key)
-
-  def __setitem__(self, key, value):
-    return setattr(self, key, value)
-
-  def __contains__(self, key):
-    return key in self.__dict__
-
-  def __repr__(self):
-    return self.__dict__.__repr__()
