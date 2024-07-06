@@ -101,7 +101,9 @@ def train(cfg_path='configs/tts_config.json'):
     logs_folder = Path(cfg['gpt_train']['logs_dir'])
     logs_folder.mkdir(exist_ok=True, parents=True)
 
-    optimizer = AdamW(tts.parameters(), lr=5e-05, betas=(0.9, 0.96), weight_decay=0.01)
+    lr = cfg['gpt_train']['lr']
+
+    optimizer = AdamW(tts.parameters(), lr=lr, betas=(0.9, 0.96), weight_decay=0.01)
     # scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=warmup)
     scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=1, T_mult=1, eta_min=0)
 
