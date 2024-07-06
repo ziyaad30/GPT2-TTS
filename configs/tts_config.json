@@ -6,27 +6,27 @@
     "mel_bin": 100
   },
   "gpt_train": {
-    "train_file": "./tort_dataset/train.txt",
-    "valid_file": "./tort_dataset/valid.txt",
+    "train_file": "./LJSPEECH/train.txt",
+    "valid_file": "./LJSPEECH/valid.txt",
     "logs_dir": "logs/gpt",
     "train_epochs": 50,
-    "print_freq": 5,
-    "save_freq": 50,
-    "scalar_freq": 100,
+    "print_freq": 10,
+    "save_freq": 500,
+    "scalar_freq": 500,
     "keep_ckpts": 2,
-    "lr": 5e-5,
+    "lr": 1e-4,
     "text_weight": 0.01,
     "mel_weight": 1.0
   },
   "gpt_dataloader": {
-    "batch_size" : 2,
+    "batch_size" : 4,
     "shuffle": true,
     "num_workers": 0,
     "drop_last": false,
     "pin_memory": false
   },
   "vae_train": {
-    "train_file": "./tort_dataset/train2.txt",
+    "train_file": "./LJSPEECH/train.txt",
     "logs_dir": "logs/dvae",
     "pad_to_samples": 200,
     "sample_rate": 24000,
