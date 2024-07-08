@@ -14,12 +14,12 @@
     "save_freq": 500,
     "scalar_freq": 500,
     "keep_ckpts": 2,
-    "lr": 1e-4,
+    "lr": 5e-5,
     "text_weight": 0.01,
     "mel_weight": 1.0
   },
   "gpt_dataloader": {
-    "batch_size" : 4,
+    "batch_size" : 2,
     "shuffle": true,
     "num_workers": 0,
     "drop_last": false,
