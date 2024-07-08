@@ -193,9 +193,9 @@ class Trainer(object):
                           f'Iteration: {idx + 1}/{len(self.dataloader)} - '
                           f'{100. * (idx + 1) / len(self.dataloader):.2f}%]')
 
-                print(f"Step: {self.step}, Total loss: {loss :.5f}, "
-                      f"Text loss: {loss_text.item() * 0.01 :.5f}, "
-                      f"Mel loss: {loss_mel.item() * 1.0 :.5f}, Grad norm: {grad_norm :.5f}, Lr: {lr}")
+                    print(f"Step: {self.step}, Total loss: {loss :.5f}, "
+                          f"Text loss: {loss_text.item() * 0.01 :.5f}, "
+                          f"Mel loss: {loss_mel.item() * 1.0 :.5f}, Grad norm: {grad_norm :.5f}, Lr: {lr}")
 
                 if self.step % self.scalar_freq == 0:
                     scalar_dict = {
