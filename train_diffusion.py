@@ -1,21 +1,24 @@
+import copy
 import json
 import os
 from pathlib import Path
 
 import torch
-from torch.optim import AdamW
+from torch.optim.adamw import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 
 from common.xtts_dataset import XTTSDataset
 from models.arch_util import TorchCodeMelSpectrogram
-from models.diffusion.model import Diffusion_Tts, denormalize_tacotron_mel, normalize_tacotron_mel
-from models.diffusion.utils.diffusion import SpacedDiffusion, space_timesteps, get_named_beta_schedule
+from models.diffusion.aa_model import denormalize_tacotron_mel, AA_diffusion, normalize_tacotron_mel
 from models.dvae.dvae import DiscreteVAE
+
+from models.diffusion.utils.diffusion import SpacedDiffusion, space_timesteps, get_named_beta_schedule
 from models.gpt.gpt import TTSModel
 from text.voice_tokenizer import VoiceBpeTokenizer
-from utils import plot_spectrogram_to_numpy, summarize, latest_checkpoint_path, oldest_checkpoint_path
+from utils import latest_checkpoint_path, summarize, plot_spectrogram_to_numpy, oldest_checkpoint_path
+from vocoder2.feature_extractors import MelSpectrogramFeatures
 from vocoder2.vocos import Vocos
 
 
@@ -25,23 +28,23 @@ def load_discrete_vocoder_diffuser(trained_diffusion_steps=1000, desired_diffusi
                            model_mean_type='epsilon',
                            model_var_type='learned_range', loss_type='mse',
                            betas=get_named_beta_schedule('linear', trained_diffusion_steps),
-                           conditioning_free=cond_free, conditioning_free_k=cond_free_k, sampler='dpm++2m')
+                           conditioning_free=cond_free, conditioning_free_k=cond_free_k,
+                           sampler='dpm++2m')
 
 
-def do_spectrogram_diffusion(diffusion_model, diffuser, latents, refer, temperature=1., verbose=True):
+def do_spectrogram_diffusion(diffusion_model, diffuser, latents, conditioning_latents, temperature=1., verbose=True):
     """
     Uses the specified diffusion model to convert discrete codes into a spectrogram.
     """
     with torch.no_grad():
-        output_seq_len = latents.shape[
-                             2] * 4  # This diffusion model converts from 22kHz spectrogram codes to a 24kHz spectrogram signal.
+        output_seq_len = latents.shape[2] * 4  # This diff model converts from 22kHz spec codes to a 24kHz spec signal.
         output_shape = (latents.shape[0], 100, output_seq_len)
 
         noise = torch.randn(output_shape, device=latents.device) * temperature
         mel = diffuser.p_sample_loop(diffusion_model, output_shape, noise=noise,
                                      model_kwargs={
-                                         "latent": latents,
-                                         "refer": refer
+                                         "hint": latents,
+                                         "refer": conditioning_latents
                                      },
                                      progress=verbose)
         return denormalize_tacotron_mel(mel)[:, :, :output_seq_len]
@@ -54,12 +57,25 @@ def get_grad_norm(model):
             param_norm = p.grad.data.norm(2)
             total_norm += param_norm.item() ** 2
         except (Exception,):
+            print(name)
             pass
     total_norm = total_norm ** (1. / 2)
     return total_norm
 
 
+def warmup(step):
+    if step < 1:
+        return float(step / 1)
+    else:
+        return 1
+
+
+def count_parameters(model):
+    return sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+
 torch_mel_spectrogram_vocos = TorchCodeMelSpectrogram(n_mel_channels=100, sampling_rate=24000)
+mel_extractor = MelSpectrogramFeatures()
 
 
 @torch.no_grad()  # torch no grad to avoid gradients from the pre-processing and DVAE codes extraction
@@ -73,15 +89,15 @@ def format_batch_on_device(dvae, batch):
     # because if is faster than iterating the tensor
     B, num_cond_samples, C, T = batch["conditioning"].size()
     conditioning_reshaped = batch["conditioning"].view(B * num_cond_samples, C, T)
-    mel_refer = torch_mel_spectrogram_vocos(conditioning_reshaped)
+    mel_refer = mel_extractor(conditioning_reshaped).squeeze(1)
     batch["mel_refer"] = mel_refer
 
     # compute codes using DVAE
     dvae_wav = batch["wav"]
-    dvae_mel_spec = torch_mel_spectrogram_vocos(dvae_wav)
-    batch["padded_mel"] = dvae_mel_spec
+    dvae_mel_spec = mel_extractor(dvae_wav).squeeze(1)
     codes = dvae.get_codebook_indices(dvae_mel_spec)
     batch["audio_codes"] = codes
+    batch["padded_mel"] = dvae_mel_spec
 
     # delete useless batch tensors
     del batch["padded_text"]
@@ -89,211 +105,249 @@ def format_batch_on_device(dvae, batch):
     return batch
 
 
-def train(cfg_path='configs/tts_config.json'):
-    print("Training...")
-    cfg = json.load(open(cfg_path))
-    tokenizer = VoiceBpeTokenizer()
+def set_requires_grad(model, val):
+    for p in model.parameters():
+        p.requires_grad = val
 
-    vocos = Vocos.from_pretrained('pretrained/pytorch_model.bin',
-                                  'vocoder2/config.yaml')
 
-    tts = TTSModel(vocab_size=tokenizer.vocab_size(), **cfg["gpt"])
-    gpt_model_path = latest_checkpoint_path(cfg['gpt_train']['logs_dir'], f"GPT_[0-9]*")
-    gpt_checkpoint = torch.load(gpt_model_path, map_location="cpu")
-    tts.load_state_dict(gpt_checkpoint, strict=False)
-    tts.eval().cuda()
-    print(f">> GPT weights restored from: {gpt_model_path}")
+def _get_target_encoder(model):
+    target_encoder = copy.deepcopy(model)
+    set_requires_grad(target_encoder, False)
+    for p in target_encoder.parameters():
+        p.DO_NOT_TRAIN = True
+    return target_encoder
 
-    dvae = DiscreteVAE(channels=cfg["gpt"]["mel_bin"],
-                       num_tokens=8192,
-                       hidden_dim=512,
-                       num_resnet_blocks=3,
-                       codebook_dim=512,
-                       num_layers=2,
-                       positional_dims=1,
-                       kernel_size=3,
-                       use_transposed_convs=False).eval()
-    dvae_path = latest_checkpoint_path(cfg['vae_train']['logs_dir'], f"dvae_[0-9]*")
-    dvae_checkpoint = torch.load(dvae_path, map_location=torch.device("cpu"))
-    dvae.load_state_dict(dvae_checkpoint['model'], strict=True)
 
-    diffusion = Diffusion_Tts(num_layers=6).cuda()
+class Trainer(object):
+    def __init__(self, cfg_path='configs/tts_config.json'):
+        self.tokenizer = VoiceBpeTokenizer()
+        self.vocos = Vocos.from_pretrained('pretrained/pytorch_model.bin',
+                                           'vocoder2/config.yaml')
+        self.cfg = json.load(open(cfg_path))
 
-    trained_diffusion_steps = 1000
-    desired_diffusion_steps = 1000
+        self.trained_diffusion_steps = 1000
+        self.desired_diffusion_steps = 1000
+        cond_free_k = 2.
 
-    diffuser = SpacedDiffusion(
-        use_timesteps=space_timesteps(trained_diffusion_steps, [desired_diffusion_steps]),
-        model_mean_type='epsilon',
-        model_var_type='learned_range', loss_type='mse',
-        betas=get_named_beta_schedule('linear', trained_diffusion_steps),
-        conditioning_free=False, conditioning_free_k=2.)
+        self.sample_rate = self.cfg['vae_train']['sample_rate']
+        self.n_mels = self.cfg['vae_train']['n_mels']
 
-    dataset = XTTSDataset(cfg, tokenizer, is_eval=False)
-    eval_dataset = XTTSDataset(cfg, tokenizer, is_eval=True)
-    dataloader = DataLoader(dataset=dataset, **cfg['gpt_dataloader'], collate_fn=dataset.collate_fn)
+        self.dvae = DiscreteVAE(channels=self.n_mels,
+                                num_tokens=8192,
+                                hidden_dim=512,
+                                num_resnet_blocks=3,
+                                codebook_dim=512,
+                                num_layers=2,
+                                positional_dims=1,
+                                kernel_size=3,
+                                use_transposed_convs=False).eval()
+        dvae_path = latest_checkpoint_path(self.cfg['vae_train']['logs_dir'], f"dvae_[0-9]*")
+        dvae_checkpoint = torch.load(dvae_path, map_location=torch.device("cpu"))
+        self.dvae.load_state_dict(dvae_checkpoint['model'], strict=True)
+        print(">> DVAE weights restored from:", dvae_path)
 
-    eval_dataloader = DataLoader(eval_dataset, batch_size=1, shuffle=False, num_workers=0, pin_memory=False,
-                                 collate_fn=eval_dataset.collate_fn)
+        self.tts = TTSModel(vocab_size=self.tokenizer.vocab_size())
+        gpt_model_path = latest_checkpoint_path(self.cfg['gpt_train']['logs_dir'], f"GPT_[0-9]*")
+        gpt_checkpoint = torch.load(gpt_model_path, map_location="cpu")
+        if 'model' in gpt_checkpoint:
+            gpt_checkpoint = gpt_checkpoint['model']
+        self.tts.load_state_dict(gpt_checkpoint, strict=False)
+        print(">> GPT weights restored from:", gpt_model_path)
+        self.tts.eval().cuda()
 
-    total_epochs = cfg['gpt_train']['train_epochs']
-    print_freq = cfg['gpt_train']['print_freq']
-    save_freq = cfg['gpt_train']['save_freq']
-    scalar_freq = cfg['gpt_train']['scalar_freq']
+        self.mel_length_compression = self.tts.mel_length_compression
 
-    logs_folder = Path('logs/diffusion')
-    logs_folder.mkdir(exist_ok=True, parents=True)
+        self.diffuser = SpacedDiffusion(
+            use_timesteps=space_timesteps(self.trained_diffusion_steps, [self.desired_diffusion_steps]),
+            model_mean_type='epsilon',
+            model_var_type='learned_range', loss_type='mse',
+            betas=get_named_beta_schedule('linear', self.trained_diffusion_steps),
+            conditioning_free=False, conditioning_free_k=cond_free_k)
 
-    optimizer = AdamW(diffusion.parameters(), lr=5e-05, betas=(0.9, 0.96), weight_decay=0.01)
-    # scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=warmup)
-    scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=1, T_mult=1, eta_min=0)
+        self.diffusion = AA_diffusion().cuda()
+        print("model params:", count_parameters(self.diffusion))
 
-    epoch = 0
-    step = 1
-    train_diffusion_steps = 30
+        self.dataset = XTTSDataset(self.cfg, self.tokenizer, is_eval=False)
+        self.eval_dataset = XTTSDataset(self.cfg, self.tokenizer, is_eval=True)
 
-    try:
-        model_path = latest_checkpoint_path(f"{logs_folder}", f"DIFF_[0-9]*")
-        checkpoint = torch.load(model_path, map_location="cpu")
-        if 'step' in checkpoint:
-            step = checkpoint['step'] + 1
-        if 'epoch' in checkpoint:
-            epoch = checkpoint['epoch']
-        if 'model' in checkpoint:
-            checkpoint = checkpoint['model']
-        diffusion.load_state_dict(checkpoint, strict=True)
-        print(f">> Diffusion weights restored from: {model_path} at step: {step}")
-    except Exception as e:
-        print(e)
+        self.dataloader = DataLoader(dataset=self.dataset, batch_size=self.cfg['diff_dataloader']['batch_size'],
+                                     collate_fn=self.dataset.collate_fn,
+                                     drop_last=self.cfg['diff_dataloader']['drop_last'],
+                                     num_workers=self.cfg['diff_dataloader']['num_workers'],
+                                     pin_memory=self.cfg['diff_dataloader']['pin_memory'],
+                                     shuffle=self.cfg['diff_dataloader']['shuffle'])
 
-    # ema_model = _get_target_encoder(diffusion).to("cuda")
+        self.eval_dataloader = DataLoader(self.eval_dataset, batch_size=1, shuffle=False, num_workers=0,
+                                          pin_memory=False, collate_fn=self.eval_dataset.collate_fn)
 
-    writer = SummaryWriter(log_dir=os.path.join(logs_folder))
-    diffusion.train()
+        self.total_epochs = self.cfg['diff_train']['train_epochs']
+        self.val_freq = self.cfg['diff_train']['val_freq']
+        self.save_freq = self.cfg['diff_train']['save_freq']
 
-    for epoch in range(epoch, total_epochs + 1):
-        for idx, batch in enumerate(dataloader):
-            diffusion.zero_grad()
+        self.logs_folder = Path(self.cfg['diff_train']['logs_dir'])
+        self.logs_folder.mkdir(exist_ok=True, parents=True)
 
-            batch = format_batch_on_device(dvae, batch)
+        self.optimizer = AdamW(self.diffusion.parameters(), lr=self.cfg['diff_train']['lr'], betas=(0.9, 0.96),
+                               weight_decay=0.01)
+        # self.scheduler = torch.optim.lr_scheduler.LambdaLR(self.optimizer, lr_lambda=warmup)
+        self.scheduler = CosineAnnealingWarmRestarts(self.optimizer, T_0=1, T_mult=1, eta_min=0)
 
-            padded_mel = batch["padded_mel"].cuda()
-            text_input = batch["text_inputs"].cuda()
-            padded_quant_mel = batch["audio_codes"].cuda()
-            mel_refer = batch["mel_refer"].cuda()
+        self.ema_model = _get_target_encoder(self.diffusion).to("cuda")
 
-            latent = tts(mel_refer,
-                         text_input,
-                         torch.tensor([text_input.shape[-1]], device=text_input.device),
-                         padded_quant_mel,
-                         torch.tensor([padded_quant_mel.shape[-1] * tts.mel_length_compression]),
-                         return_latent=True).transpose(1, 2)
+        self.epoch = 0
+        self.step = 1
 
-            x_start = normalize_tacotron_mel(padded_mel)
-            aligned_conditioning = latent
-            conditioning_latent = normalize_tacotron_mel(mel_refer)
-            t = torch.randint(0, desired_diffusion_steps, (x_start.shape[0],), device=text_input.device).long().to(
-                "cuda")
+        self.load()
 
-            loss = diffuser.training_losses(
-                model=diffusion,
-                x_start=x_start,
-                t=t,
-                model_kwargs={
-                    "latent": aligned_conditioning,
-                    "refer": conditioning_latent
-                },
-            )["loss"].mean()
+        self.writer = SummaryWriter(log_dir=os.path.join(self.logs_folder))
 
-            loss += loss.item()
-            loss.backward()
-            grad_norm = torch.nn.utils.clip_grad_norm_(diffusion.parameters(), max_norm=1)
-            # grad_norm = get_grad_norm(diffusion)
-            optimizer.step()
-            lr = scheduler.get_last_lr()[0]
+    def load(self):
+        try:
+            model_path = latest_checkpoint_path(f"{self.logs_folder}", f"DIFF_[0-9]*")
+            checkpoint = torch.load(model_path, map_location="cpu")
+            if 'step' in checkpoint:
+                self.step = checkpoint['step'] + 1
+            if 'epoch' in checkpoint:
+                self.epoch = checkpoint['epoch']
+            if 'model' in checkpoint:
+                checkpoint = checkpoint['model']
+            self.diffusion.load_state_dict(checkpoint, strict=False)
+            print(f">> Diffusion weights restored from: {model_path} at step: {self.step}")
 
-            if step % print_freq == 0:
-                print(f'[Epoch: {epoch}, '
-                      f'Iteration: {idx + 1}/{len(dataloader)} - '
-                      f'{100. * (idx + 1) / len(dataloader):.2f}%]')
+        except Exception as e:
+            print(e)
+            self.ema_model = _get_target_encoder(self.diffusion).to("cuda")
 
-            print(f"Step: {step}, Total loss: {loss :.5f}, Grad norm: {grad_norm :.5f}, Lr: {lr}")
+    def save(self):
+        data = {
+            'step': self.step,
+            'epoch': self.epoch,
+            'model': self.diffusion.state_dict(),
+        }
+        torch.save(data, f'{self.logs_folder}/DIFF_{self.step}.pth')
+        print(f'Saved Diffusion model to {self.logs_folder}/DIFF_{self.step}.pth')
+        keep_ckpts = self.cfg['diff_train']['keep_ckpts']
+        old_ckpt = oldest_checkpoint_path(f"{self.logs_folder}", f"DIFF_[0-9]*", preserved=keep_ckpts)
+        if os.path.exists(old_ckpt):
+            print(f"Removed old GPT model {old_ckpt}")
+            os.remove(old_ckpt)
 
-            if step % scalar_freq == 0:
-                scalar_dict = {"loss": loss, "loss/grad": grad_norm, "lr": lr}
-                summarize(
-                    writer=writer,
-                    global_step=step,
-                    scalars=scalar_dict
-                )
+    def train(self):
+        self.ema_model.train()
 
-            if step % save_freq == 0:
-                print("Saving...")
-                data = {
-                    'step': step,
-                    'epoch': epoch,
-                    'model': diffusion.state_dict(),
-                }
-                torch.save(data, f'{logs_folder}/DIFF_{step}.pth')
-                print(f'Saved Diffusion model to {logs_folder}/DIFF_{step}.pth')
-                keep_ckpts = cfg['gpt_train']['keep_ckpts']
-                old_ckpt = oldest_checkpoint_path(f"{logs_folder}", f"DIFF_[0-9]*", preserved=keep_ckpts)
-                if os.path.exists(old_ckpt):
-                    print(f"Removed old Diffusion model {old_ckpt}")
-                    os.remove(old_ckpt)
+        for self.epoch in range(self.epoch, self.total_epochs + 1):
+            for idx, batch in enumerate(self.dataloader):
+                total_loss = 0.
 
-                diffusion.eval()
-                print("Evaluating...")
-                for idx_, batch_ in enumerate(eval_dataloader):
-                    if idx_ == 1:
-                        break
-                    batch = format_batch_on_device(dvae, batch_)
-                    mel_refer = batch["mel_refer"].cuda()
-                    padded_mel = batch["padded_mel"].cuda()
-                    text_tokens = batch["text_inputs"].cuda()
-                    codes = batch["audio_codes"].cuda()
-                    gt_wav = batch["wav"]
+                batch = format_batch_on_device(self.dvae, batch)
+                mel_refer = batch["mel_refer"].cuda()
+                padded_mel = batch["padded_mel"].cuda()
+                text_input = batch["text_inputs"].cuda()
+                padded_quant_mel = batch["audio_codes"].cuda()
 
-                    with torch.no_grad():
-                        latent = tts(mel_refer,
-                                     text_tokens,
-                                     torch.tensor([text_tokens.shape[-1]], device=text_tokens.device),
-                                     codes,
-                                     torch.tensor([codes.shape[-1] * tts.mel_length_compression]),
-                                     return_latent=True).transpose(1, 2)
-                    refer_padded = normalize_tacotron_mel(mel_refer)
-                    with torch.no_grad():
-                        eval_diffuser = load_discrete_vocoder_diffuser(desired_diffusion_steps=train_diffusion_steps)
-                        mel = do_spectrogram_diffusion(diffusion, eval_diffuser, latent, refer_padded, temperature=0.8)
-                        mel = mel.detach().cpu()
+                with torch.no_grad():
+                    latent = self.tts(mel_refer, text_input,
+                                      torch.tensor([text_input.shape[-1]], device="cuda"),
+                                      padded_quant_mel,
+                                      torch.tensor(
+                                          [padded_quant_mel.shape[-1] * self.mel_length_compression],
+                                          device="cuda"),
+                                      return_latent=True).transpose(1, 2)
+                x_start = normalize_tacotron_mel(padded_mel)
+                aligned_conditioning = latent
+                conditioning_latent = normalize_tacotron_mel(mel_refer)
+                t = torch.randint(0, self.desired_diffusion_steps, (x_start.shape[0],), device="cuda").long().to("cuda")
 
-                        gen = vocos.decode(mel)
+                loss = self.diffuser.training_losses(
+                    model=self.diffusion,
+                    x_start=x_start,
+                    t=t,
+                    model_kwargs={
+                        "hint": aligned_conditioning,
+                        "refer": conditioning_latent
+                    },
+                )["loss"].mean()
 
-                        audio_dict = {
-                            f"train/gen_audio_{idx_}": gen,
-                            f"train/gt_audio_{idx_}": gt_wav,
-                        }
+                unused_params = []
+                model = self.diffusion
+                unused_params.extend(list(model.refer_model.blocks.parameters()))
+                unused_params.extend(list(model.refer_model.out.parameters()))
+                unused_params.extend(list(model.refer_model.hint_converter.parameters()))
+                unused_params.extend(list(model.refer_enc.visual.proj))
+                extraneous_addition = 0
+                for p in unused_params:
+                    extraneous_addition = extraneous_addition + p.mean()
+                loss = loss + 0 * extraneous_addition
+                total_loss += loss.item()
+                loss.backward()
 
-                        image_dict = {
-                            f"train/gt_mel_{idx_}": plot_spectrogram_to_numpy(
-                                padded_mel[0, :, :].detach().unsqueeze(-1).cpu()),
-                            f"train/gen_mel_{idx_}": plot_spectrogram_to_numpy(
-                                mel[0, :, :].detach().unsqueeze(-1).cpu()),
-                        }
-                        summarize(
-                            writer=writer,
-                            audios=audio_dict,
-                            global_step=step,
-                            images=image_dict,
-                        )
-                diffusion.train()
-                print("Training...")
+                grad_norm = get_grad_norm(self.diffusion)
+                torch.nn.utils.clip_grad_norm_(self.diffusion.parameters(), 1.0)
+                self.optimizer.step()
+                self.optimizer.zero_grad()
+                lr = self.scheduler.get_last_lr()[0]
 
-            step += 1
-            # scheduler.step()
-            scheduler.step(epoch + idx / len(dataloader))
-        epoch += 1
+                if self.step % 5 == 0:
+                    print(f'[Epoch: {self.epoch}, '
+                          f'Iteration: {idx + 1}/{len(self.dataloader)} - '
+                          f'{100. * (idx + 1) / len(self.dataloader):.2f}%]')
+
+                    print(f"Step: {self.step}, loss: {total_loss}, "
+                          f"loss/grad: {grad_norm}, lr: {lr}")
+                    scalar_dict = {"loss": total_loss, "loss/grad": grad_norm, "lr": self.scheduler.get_last_lr()[0]}
+                    summarize(
+                        writer=self.writer,
+                        global_step=self.step,
+                        scalars=scalar_dict
+                    )
+
+                if self.step % self.save_freq == 0:
+                    self.ema_model.eval()
+                    for idx_, batch_ in enumerate(self.eval_dataloader):
+                        if idx_ == 2:
+                            break
+                        batch = format_batch_on_device(self.dvae, batch_)
+                        mel_refer = batch["mel_refer"].cuda()
+                        padded_mel = batch["padded_mel"].cuda()
+                        text_input = batch["text_inputs"].cuda()
+                        padded_quant_mel = batch["audio_codes"].cuda()
+                        with torch.no_grad():
+                            latent = self.tts(mel_refer, text_input,
+                                              torch.tensor([text_input.shape[-1]], device="cuda"),
+                                              padded_quant_mel,
+                                              torch.tensor(
+                                                  [padded_quant_mel.shape[-1] * self.mel_length_compression],
+                                                  device="cuda"),
+                                              return_latent=True).transpose(1, 2)
+                        refer_padded = normalize_tacotron_mel(mel_refer)
+                        with torch.no_grad():
+                            diffuser = load_discrete_vocoder_diffuser(desired_diffusion_steps=60)
+                            mel = do_spectrogram_diffusion(self.diffusion, diffuser,
+                                                           latent, refer_padded, temperature=1.0)
+                            mel = mel.detach().cpu()
+                            gen = self.vocos.decode(mel)
+                            audio_dict = {
+                                f"gen/audio_{idx_}": gen,
+                            }
+                            image_dict = {
+                                f"gt/mel_{idx_}": plot_spectrogram_to_numpy(
+                                    padded_mel[0, :, :].detach().unsqueeze(-1).cpu()),
+                                f"gen/mel_{idx_}": plot_spectrogram_to_numpy(mel[0, :, :].detach().unsqueeze(-1).cpu()),
+                            }
+                            summarize(
+                                writer=self.writer,
+                                audios=audio_dict,
+                                global_step=self.step,
+                                images=image_dict,
+                            )
+                    self.save()
+                    self.ema_model.train()
+
+                self.step += 1
+                self.scheduler.step(self.epoch + idx / len(self.dataloader))
+            self.epoch += 1
 
 
 if __name__ == '__main__':
-    train()
+    trainer = Trainer()
+    trainer.train()

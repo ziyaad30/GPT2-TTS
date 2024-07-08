@@ -4,11 +4,13 @@ from pathlib import Path
 
 import torch
 from torch.optim.adamw import AdamW
+from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 
 from common.dvae_dataset import DvaeMelDataset
-from models.dvae.dvae import DiscreteVAE
+from models.dvae.xtts_dvae import DiscreteVAE
+# from models.dvae.dvae import DiscreteVAE
 from utils import plot_spectrogram_to_numpy, summarize, oldest_checkpoint_path, latest_checkpoint_path
 
 
@@ -24,12 +26,17 @@ def get_grad_norm(model):
     return total_norm
 
 
+def warmup(step):
+    return float(1)
+
+
 class Trainer(object):
     def __init__(self, cfg_path='configs/tts_config.json'):
         self.cfg = json.load(open(cfg_path))
 
         self.logs_folder = Path(self.cfg['vae_train']['logs_dir'])
         self.logs_folder.mkdir(exist_ok=True, parents=True)
+        lr = self.cfg['vae_train']['lr']
 
         self.dvae = DiscreteVAE(channels=100,
                                 num_tokens=8192,
@@ -43,7 +50,9 @@ class Trainer(object):
 
         self.dataset = DvaeMelDataset(self.cfg)
         self.dataloader = DataLoader(self.dataset, **self.cfg['vae_dataloader'])
-        self.optimizer = AdamW(self.dvae.parameters(), lr=3e-4, betas=(0.9, 0.9999), weight_decay=0.01)
+        self.optimizer = AdamW(self.dvae.parameters(), lr=lr, betas=(0.9, 0.9999), weight_decay=0.01)
+        # self.scheduler = torch.optim.lr_scheduler.LambdaLR(self.optimizer, lr_lambda=warmup)
+        self.scheduler = CosineAnnealingWarmRestarts(self.optimizer, T_0=1, T_mult=1, eta_min=0)
         self.train_epochs = self.cfg['vae_train']['train_epochs']
         self.eval_interval = self.cfg['vae_train']['eval_interval']
         self.save_freq = self.cfg['vae_train']['save_freq']
@@ -73,6 +82,7 @@ class Trainer(object):
         for self.epoch in range(self.epoch, self.train_epochs + 1):
             for idx, batch in enumerate(self.dataloader):
                 total_loss = 0.
+                self.dvae.zero_grad()
                 mel = batch
                 mel = mel.to("cuda").squeeze(1)
 
@@ -85,12 +95,13 @@ class Trainer(object):
                 grad_norm = get_grad_norm(self.dvae)
 
                 self.optimizer.step()
-                self.optimizer.zero_grad()
+                lr = self.scheduler.get_last_lr()[0]
+                # self.optimizer.zero_grad()
 
                 if self.step % 5 == 0:
                     print(f'[Epoch: {self.epoch}, '
                           f'Iteration: {idx + 1}/{len(self.dataloader)} - {100. * (idx + 1) / len(self.dataloader):.2f}%]')
-                    print(f"step: {self.step}, total_loss: {total_loss}")
+                    print(f"step: {self.step}, total_loss: {total_loss}, grad_norm: {grad_norm}, lr: {lr}")
 
                 if self.step % self.eval_interval == 0:
                     self.dvae.eval()
@@ -129,6 +140,8 @@ class Trainer(object):
                         os.remove(old_ckpt)
 
                 self.step += 1
+                # self.scheduler.step()
+                self.scheduler.step(self.epoch + idx / len(self.dataloader))
 
 
 if __name__ == '__main__':
