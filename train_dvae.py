@@ -3,8 +3,8 @@ import os
 from pathlib import Path
 
 import torch
-from torch.optim.adamw import AdamW
-from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
+from torch.optim import AdamW
+# from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 
@@ -50,12 +50,13 @@ class Trainer(object):
 
         self.dataset = DvaeMelDataset(self.cfg)
         self.dataloader = DataLoader(self.dataset, **self.cfg['vae_dataloader'])
-        self.optimizer = AdamW(self.dvae.parameters(), lr=lr, betas=(0.9, 0.9999), weight_decay=0.01)
+        self.optimizer = AdamW(self.dvae.parameters(), lr=3e-4, betas=(0.9, 0.9999), weight_decay=0.01)
         # self.scheduler = torch.optim.lr_scheduler.LambdaLR(self.optimizer, lr_lambda=warmup)
-        self.scheduler = CosineAnnealingWarmRestarts(self.optimizer, T_0=1, T_mult=1, eta_min=0)
+        # self.scheduler = CosineAnnealingWarmRestarts(self.optimizer, T_0=1, T_mult=1, eta_min=0)
         self.train_epochs = self.cfg['vae_train']['train_epochs']
         self.eval_interval = self.cfg['vae_train']['eval_interval']
         self.save_freq = self.cfg['vae_train']['save_freq']
+        self.log_interval = self.cfg['vae_train']['log_interval']
         self.step = 1
         self.epoch = 0
         self.writer = SummaryWriter(log_dir=os.path.join(self.logs_folder))
@@ -95,13 +96,18 @@ class Trainer(object):
                 grad_norm = get_grad_norm(self.dvae)
 
                 self.optimizer.step()
-                lr = self.scheduler.get_last_lr()[0]
+                # lr = self.scheduler.get_last_lr()[0]
                 # self.optimizer.zero_grad()
 
-                if self.step % 5 == 0:
+                if self.step % self.log_interval == 0:
                     print(f'[Epoch: {self.epoch}, '
                           f'Iteration: {idx + 1}/{len(self.dataloader)} - {100. * (idx + 1) / len(self.dataloader):.2f}%]')
-                    print(f"step: {self.step}, total_loss: {total_loss}, grad_norm: {grad_norm}, lr: {lr}")
+                    print(f"step: {self.step}, total_loss: {total_loss}, "
+                          f"loss_mel: {recon_loss}, "
+                          f"loss_commitment: {commitment_loss}, "
+                          f"grad_norm: {grad_norm}"
+                          # f"lr: {lr}"
+                          )
 
                 if self.step % self.eval_interval == 0:
                     self.dvae.eval()
@@ -141,7 +147,7 @@ class Trainer(object):
 
                 self.step += 1
                 # self.scheduler.step()
-                self.scheduler.step(self.epoch + idx / len(self.dataloader))
+                # self.scheduler.step(self.epoch + idx / len(self.dataloader))
 
 
 if __name__ == '__main__':
