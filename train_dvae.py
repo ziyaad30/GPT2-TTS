@@ -50,7 +50,8 @@ class Trainer(object):
 
         self.dataset = DvaeMelDataset(self.cfg)
         self.dataloader = DataLoader(self.dataset, **self.cfg['vae_dataloader'])
-        self.optimizer = AdamW(self.dvae.parameters(), lr=3e-4, betas=(0.9, 0.9999), weight_decay=0.01)
+        self.lr = self.cfg['vae_train']['lr']
+        self.optimizer = AdamW(self.dvae.parameters(), lr=self.lr, betas=(0.9, 0.9999), weight_decay=0.01)
         # self.scheduler = torch.optim.lr_scheduler.LambdaLR(self.optimizer, lr_lambda=warmup)
         # self.scheduler = CosineAnnealingWarmRestarts(self.optimizer, T_0=1, T_mult=1, eta_min=0)
         self.train_epochs = self.cfg['vae_train']['train_epochs']
