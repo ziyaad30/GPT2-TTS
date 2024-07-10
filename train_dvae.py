@@ -9,8 +9,8 @@ from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 
 from common.dvae_dataset import DvaeMelDataset
-from models.dvae.xtts_dvae import DiscreteVAE
-# from models.dvae.dvae import DiscreteVAE
+# from models.dvae.xtts_dvae import DiscreteVAE
+from models.dvae.dvae import DiscreteVAE
 from utils import plot_spectrogram_to_numpy, summarize, oldest_checkpoint_path, latest_checkpoint_path
 
 
@@ -36,9 +36,8 @@ class Trainer(object):
 
         self.logs_folder = Path(self.cfg['vae_train']['logs_dir'])
         self.logs_folder.mkdir(exist_ok=True, parents=True)
-        lr = self.cfg['vae_train']['lr']
 
-        self.dvae = DiscreteVAE(channels=100,
+        self.dvae = DiscreteVAE(channels=self.cfg["gpt"]["mel_bin"],
                                 num_tokens=8192,
                                 hidden_dim=512,
                                 num_resnet_blocks=3,
