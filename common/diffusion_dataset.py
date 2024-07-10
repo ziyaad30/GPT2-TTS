@@ -32,13 +32,13 @@ def parse_filelist(filelist_path, split_char="|"):
     return filepaths_and_text
 
 
-class XTTSDataset(Dataset):
+class DiffusionDataset(Dataset):
     def __init__(self, config, tokenizer, is_eval=False):
         self.is_eval = is_eval
         if not self.is_eval:
-            self.path = config['gpt_train']['train_file']
+            self.path = config['diff_train']['train_file']
         else:
-            self.path = config['gpt_train']['valid_file']
+            self.path = config['diff_train']['valid_file']
         self.audiopath_and_text = parse_filelist(self.path)
         self.tokenizer = tokenizer
         self.sample_rate = 22050  # config['vae_train']['sample_rate']
