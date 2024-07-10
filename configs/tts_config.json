@@ -3,7 +3,7 @@
     "layers": 15,
     "heads": 16,
     "model_dim": 1024,
-    "mel_bin": 100
+    "mel_bin": 80
   },
   "gpt_train": {
     "train_file": "./tort_dataset/train.txt",
@@ -30,7 +30,7 @@
     "logs_dir": "logs/dvae",
     "pad_to_samples": 200,
     "sample_rate": 24000,
-    "n_mels": 100,
+    "n_mels": 80,
     "squeeze": false,
     "train_epochs":1000,
     "log_interval": 50,
